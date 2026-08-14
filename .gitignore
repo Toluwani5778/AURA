@@ -1,0 +1,162 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual Environments
+myenv/
+venv/
+env/
+ENV/
+.venv
+*.virtualenv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# Session & Log Files
+data/sessions/*.json
+data/test_logs/*.json
+*.log
+logs/
+
+# Audio Output
+resources/audio/Output/*.wav
+resources/audio/Output/*.mp3
+resources/audio/Output/*.ogg
+
+# Environment Variables
+.env
+.env.local
+.env.*.local
+
+# Secrets & Credentials
+*.pem
+*.key
+*.pub
+secrets.txt
+credentials.json
+
+# OS Files
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini
+
+# Temporary Files
+*.tmp
+*.bak
+*.swp
+.~*
+*~
+
+# Git
+.git/
+.gitmodules
+
+# Ollama Models (keep directory, exclude large model files)
+ollama/models/**/*
+!ollama/models/.gitkeep
+
+# Dependency Lock Files (optional - uncomment if you want version control)
+# poetry.lock
+# Pipfile.lock
+
+# IDE Caches
+.pylintrc
+.flake8
+.pre-commit-config.yaml
+
+# Generated Files
+*.pyc
+*.pyo
+*.pyd
+
+# Pyre Type Checker
+.pyre/
+
+# Debugger
+.debugger/
+
+# Local Configuration Overrides
+local_config.py
+config.local.py
+
+# Mac
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+ehthumbs.db
+$RECYCLE.BIN/
+
+# Node (if using any npm tools)
+node_modules/
+package-lock.json
+
+# Docker
+.docker/
+docker-compose.override.yml
+
+# CI/CD
+.github/workflows/secrets/
+
+# Project-Specific
+data/sessions/              # Keep directory, ignore session files
+!data/sessions/.gitkeep
+data/test_logs/             # Keep directory, ignore test reports
+!data/test_logs/.gitkeep
+wake_model/*.onnx           # Large model files (keep directory structure)
+!wake_model/.gitkeep
+
+# Notebook Checkpoints
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Keep essential directories (add .gitkeep if needed)
+!data/.gitkeep
+!resources/.gitkeep
+!resources/audio/.gitkeep
+!resources/audio/Input/.gitkeep
+!resources/audio/Output/.gitkeep
+!tools/.gitkeep

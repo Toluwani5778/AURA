@@ -1,0 +1,20 @@
+import subprocess
+from Kokoro_connect.py import speak
+
+
+def play_audio(file):
+
+    subprocess.run(
+        [
+            "aplay",
+            file
+        ]
+    )
+
+audio = speak(
+    "Hello Toluwani. How can I assist?"
+)
+
+play_audio(audio)
+
+Name of Assistant: AURA
