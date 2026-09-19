@@ -1,5 +1,8 @@
 import requests
 import subprocess
+from core.alsa import silence_alsa_errors
+
+silence_alsa_errors()
 
 
 KOKORO_URL = "http://localhost:8880"
@@ -27,5 +30,8 @@ def play_audio(file):
         [
             "aplay",
             file
-        ]
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
     )

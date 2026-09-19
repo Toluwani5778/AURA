@@ -3,6 +3,7 @@ import numpy as np
 import openwakeword
 import soundfile as sf
 import time
+from core.alsa import silence_alsa_errors, suppress_alsa_errors
 from core.config import (
     WAKEWORD_PRETRAINED, WAKEWORD_CUSTOM, WAKEWORD_CUSTOM_PATH,
     WAKEWORD_THRESHOLD, SLEEP_WAKEWORD_THRESHOLD,
@@ -10,30 +11,7 @@ from core.config import (
     USE_CUSTOM_MODEL
 )
 
-import ctypes
-from contextlib import contextmanager
-
-ERROR_HANDLER_FUNC = ctypes.CFUNCTYPE(
-    None, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p
-)
-
-def py_error_handler(filename, line, function, err, fmt):
-    pass
-
-c_error_handler = ERROR_HANDLER_FUNC(py_error_handler)
-
-@contextmanager
-def suppress_alsa_errors():
-    try:
-        asound = ctypes.cdll.LoadLibrary('libasound.so.2')
-        asound.snd_lib_error_set_handler(c_error_handler)
-        yield
-    finally:
-        try:
-            asound.snd_lib_error_set_handler(None)
-        except Exception:
-            pass
-
+silence_alsa_errors()
 openwakeword.utils.download_models()
 
 # AUDIO_PATH = "resources/audio/Input/seb.wav"  # path to the audio file
@@ -61,14 +39,14 @@ def Wakeup_agent(mod=None, wakeword=None, threshold=WAKEWORD_THRESHOLD):
     with suppress_alsa_errors():
         pa = pyaudio.PyAudio()
 
-    # Open a stream to capture audio from the microphone
-    stream = pa.open(
-        format=pyaudio.paInt16,
-        channels=1,
-        rate=16000,
-        input=True,
-        frames_per_buffer=1280,
-    )
+    with suppress_alsa_errors():
+        stream = pa.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=16000,
+            input=True,
+            frames_per_buffer=1280,
+        )
 
     print(f"🎤 Listening for wake word: '{wakeword}'...")
 

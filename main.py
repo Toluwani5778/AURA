@@ -7,7 +7,9 @@ import pyaudio
 import numpy as np
 import time
 import threading
-from core.llm import ask_VA
+import re
+from core.alsa import silence_alsa_errors, suppress_alsa_errors
+from core.llm import ask_VA, plan_action
 from core.memory import SessionManager
 from core.task_executor import TaskExecutor
 from core.skills import global_skill_registry, initialize_default_skills
@@ -19,6 +21,8 @@ from core.config import (
     AUDIO_FORMAT, AUDIO_CHANNELS, AUDIO_RATE, AUDIO_FRAMES_PER_BUFFER
 )
 
+silence_alsa_errors()
+
 
 class AuraAssistant:
     """Main AURA Assistant Class"""
@@ -28,18 +32,20 @@ class AuraAssistant:
         self.audio_stream = None
         self.running = False
         self.audio_thread = None
-        self.pa = pyaudio.PyAudio()
+        with suppress_alsa_errors():
+            self.pa = pyaudio.PyAudio()
     
     def _get_audio_stream(self):
         """Get or create audio stream"""
         if self.audio_stream is None:
-            self.audio_stream = self.pa.open(
-                format=pyaudio.paInt16,
-                channels=AUDIO_CHANNELS,
-                rate=AUDIO_RATE,
-                input=True,
-                frames_per_buffer=AUDIO_FRAMES_PER_BUFFER,
-            )
+            with suppress_alsa_errors():
+                self.audio_stream = self.pa.open(
+                    format=pyaudio.paInt16,
+                    channels=AUDIO_CHANNELS,
+                    rate=AUDIO_RATE,
+                    input=True,
+                    frames_per_buffer=AUDIO_FRAMES_PER_BUFFER,
+                )
         return self.audio_stream
         
     def speak_response(self, text):
@@ -84,11 +90,21 @@ class AuraAssistant:
     
     def check_for_sleep_word(self, transcribed_text):
         """Check if the transcribed text contains sleep word"""
-        if transcribed_text:
-            sleep_word_lower = SLEEP_WAKEWORD.lower()
-            if sleep_word_lower in transcribed_text.lower():
-                return True
-        return False
+        if not transcribed_text:
+            return False
+
+        normalized_input = re.sub(r"[^a-z0-9']+", " ", transcribed_text.lower()).strip()
+        normalized_input = re.sub(r"\s+", " ", normalized_input)
+        sleep_phrases = {
+            SLEEP_WAKEWORD.lower(),
+            "good night aura",
+            "good night aurora",
+            "goodnight aura",
+            "goodnight aurora",
+            "good night",
+            "goodnight",
+        }
+        return any(phrase in normalized_input for phrase in sleep_phrases)
     
     def run_session(self):
         """Run an active AURA session"""
@@ -133,29 +149,49 @@ class AuraAssistant:
                     # Check for sleep word
                     if self.check_for_sleep_word(user_input):
                         print(f"User said sleep word: '{user_input}'")
-                        self.speak_response("Good night! I'll be here if you need me. Sleep well!")
+                        sleep_response = "Good night! I'll be here if you need me. Sleep well!"
+                        self.session.add_message("user", user_input)
+                        self.session.add_message("assistant", sleep_response)
+                        self.speak_response(sleep_response)
                         break
                     
                     print(f"👤 User: {user_input}")
                     self.session.add_message("user", user_input)
                     
-                    # Try to match a skill first
-                    skill_success, skill_response, skill_used = global_skill_registry.execute(user_input)
-                    
-                    if skill_success and skill_response:
-                        # Skill handled it
-                        final_response = skill_response
-                        print(f"💡 Skill '{skill_used.name}' used")
+                    task_type = TaskExecutor.classify_task(user_input)
+                    context = self.session.get_context_for_llm()
+                    action_plan = {"action": "none", "app": None}
+                    if TaskExecutor.may_be_action_request(user_input):
+                        action_plan = plan_action(user_input, context)
+
+                    # Direct actions are deterministic and should happen before
+                    # an LLM response, while conversation remains model-driven.
+                    if action_plan["action"] != "none":
+                        task_success, task_response = TaskExecutor.execute_plan(action_plan)
+                        if task_success:
+                            final_response = task_response
+                        else:
+                            final_response = ask_VA(user_input, context)
+                    elif task_type.value in {"pc_control", "app_control"}:
+                        task_success, task_response = TaskExecutor.execute(user_input)
+                        if task_success:
+                            final_response = task_response
+                        else:
+                            final_response = ask_VA(user_input, context)
                     else:
-                        # Fall back to LLM
-                        context = self.session.get_context_for_llm()
-                        llm_response = ask_VA(user_input, context)
-                        
-                        # Try to execute tasks based on LLM response
-                        task_success, task_response = TaskExecutor.execute(user_input, llm_response)
-                        final_response = task_response if task_success else llm_response
+                        # Narrow utility skills may answer immediately. Anything
+                        # ambiguous, contextual, or conversational goes to Ollama.
+                        skill_success, skill_response, skill_used = global_skill_registry.execute(
+                            user_input,
+                            excluded_names={"Capabilities"},
+                        )
+
+                        if skill_success and skill_response:
+                            final_response = skill_response
+                            print(f"💡 Skill '{skill_used.name}' used")
+                        else:
+                            final_response = ask_VA(user_input, context)
                     
-                    print(f"🎙️ AURA: {final_response[:100]}...")
                     self.session.add_message("assistant", final_response)
                     
                     # Speak the response

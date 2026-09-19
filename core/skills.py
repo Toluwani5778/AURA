@@ -6,6 +6,7 @@ Extensible framework for adding custom skills and capabilities
 from abc import ABC, abstractmethod
 from typing import Dict, Tuple, Optional, List
 import inspect
+import re
 
 
 class AuraSkill(ABC):
@@ -59,6 +60,11 @@ class AuraSkill(ABC):
         }
 
 
+def _normalized_words(user_input: str) -> set[str]:
+    """Return lowercase word tokens so keywords do not match substrings."""
+    return set(re.findall(r"\b[\w']+\b", user_input.lower()))
+
+
 class SkillRegistry:
     """Registry for managing AURA skills"""
     
@@ -79,21 +85,31 @@ class SkillRegistry:
                 return True
         return False
     
-    def find_skill(self, user_input: str) -> Optional[AuraSkill]:
+    def find_skill(
+        self,
+        user_input: str,
+        excluded_names: Optional[set[str]] = None,
+    ) -> Optional[AuraSkill]:
         """Find a skill that can handle the user input"""
         for skill in self.skills:
+            if excluded_names and skill.name in excluded_names:
+                continue
             if skill.can_handle(user_input):
                 return skill
         return None
     
-    def execute(self, user_input: str) -> Tuple[bool, str, Optional[AuraSkill]]:
+    def execute(
+        self,
+        user_input: str,
+        excluded_names: Optional[set[str]] = None,
+    ) -> Tuple[bool, str, Optional[AuraSkill]]:
         """
         Find and execute a skill for the user input
         
         Returns:
             Tuple of (success, response, skill_used)
         """
-        skill = self.find_skill(user_input)
+        skill = self.find_skill(user_input, excluded_names)
         if skill:
             success, response = skill.execute(user_input)
             return success, response, skill
@@ -116,8 +132,8 @@ class GreetingSkill(AuraSkill):
     keywords = ["hello", "hi", "hey", "goodbye", "bye", "farewell"]
     
     def can_handle(self, user_input: str) -> bool:
-        user_lower = user_input.lower()
-        return any(kw in user_lower for kw in self.keywords)
+        words = _normalized_words(user_input)
+        return any(keyword in words for keyword in self.keywords)
     
     def execute(self, user_input: str) -> Tuple[bool, str]:
         user_lower = user_input.lower()
@@ -138,7 +154,8 @@ class TimeSkill(AuraSkill):
     
     def can_handle(self, user_input: str) -> bool:
         user_lower = user_input.lower()
-        return any(kw in user_lower for kw in self.keywords)
+        words = _normalized_words(user_input)
+        return "time" in words or "date" in words or "what time" in user_lower or "what's the time" in user_lower
     
     def execute(self, user_input: str) -> Tuple[bool, str]:
         from datetime import datetime
@@ -159,7 +176,7 @@ class JokeSkill(AuraSkill):
     
     def can_handle(self, user_input: str) -> bool:
         user_lower = user_input.lower()
-        return any(kw in user_lower for kw in self.keywords)
+        return any(keyword in user_lower for keyword in self.keywords)
     
     def execute(self, user_input: str) -> Tuple[bool, str]:
         jokes = [
@@ -177,12 +194,17 @@ class CapabilitiesSkill(AuraSkill):
     """Describes what AURA can do"""
     
     name = "Capabilities"
-    description = "Describes LUCY's capabilities"
-    keywords = ["capabilities", "can you", "what can you", "what can i ask", "help"]
+    description = "Describes AURA's capabilities"
+    keywords = ["capabilities", "what can you", "what can i ask", "help"]
     
     def can_handle(self, user_input: str) -> bool:
         user_lower = user_input.lower()
-        return any(kw in user_lower for kw in self.keywords)
+        return (
+            "capabilities" in user_lower
+            or "what can you" in user_lower
+            or "what can i ask" in user_lower
+            or user_lower.strip() in {"help", "help me"}
+        )
     
     def execute(self, user_input: str) -> Tuple[bool, str]:
         capabilities = """
@@ -209,6 +231,9 @@ global_skill_registry = SkillRegistry()
 # Register default skills
 def initialize_default_skills():
     """Initialize AURA with default skills"""
+    if global_skill_registry.skills:
+        return
+
     global_skill_registry.register(GreetingSkill())
     global_skill_registry.register(TimeSkill())
     global_skill_registry.register(JokeSkill())

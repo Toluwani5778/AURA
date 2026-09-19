@@ -5,7 +5,7 @@ Handles different types of tasks AURA can perform (PC control, app opening, Q&A,
 
 import subprocess
 import re
-from typing import Tuple, Optional
+from typing import Any, Dict, Tuple, Optional
 from enum import Enum
 
 
@@ -55,6 +55,12 @@ class TaskExecutor:
         "brightness": "brightness",
         "volume": "volume",
     }
+
+    ACTION_COMMANDS = {
+        "reboot": ["systemctl", "reboot"],
+        "shutdown": ["systemctl", "poweroff"],
+        "suspend": ["systemctl", "suspend"],
+    }
     
     @staticmethod
     def classify_task(user_input: str) -> TaskType:
@@ -86,9 +92,23 @@ class TaskExecutor:
         
         # Default to general conversation
         return TaskType.GENERAL
+
+    @staticmethod
+    def may_be_action_request(user_input: str) -> bool:
+        """Identify language that is worth sending to the action planner."""
+        action_words = {
+            "open", "launch", "start", "close", "quit", "kill", "stop",
+            "restart", "reboot", "shutdown", "power", "turn", "suspend",
+            "sleep", "lock", "increase", "decrease", "raise", "lower", "mute",
+        }
+        words = set(re.findall(r"\b[\w']+\b", user_input.lower()))
+        return bool(words & action_words) or TaskExecutor.classify_task(user_input) in {
+            TaskType.PC_CONTROL,
+            TaskType.APP_CONTROL,
+        }
     
     @staticmethod
-    def execute(user_input: str, llm_response: str) -> Tuple[bool, str]:
+    def execute(user_input: str, llm_response: str = "") -> Tuple[bool, str]:
         """
         Execute a task based on user input
         
@@ -118,6 +138,95 @@ class TaskExecutor:
         
         except Exception as e:
             return False, f"I encountered an error: {str(e)}"
+
+    @staticmethod
+    def execute_plan(plan: Dict[str, Any]) -> Tuple[bool, str]:
+        """Execute one validated action selected by AURA's planner."""
+        action = plan.get("action")
+        app = plan.get("app")
+
+        if action in TaskExecutor.ACTION_COMMANDS:
+            return TaskExecutor._run_system_action(action)
+        if action == "lock":
+            return TaskExecutor._run_command(["loginctl", "lock-session"], "Locking the screen.")
+        if action in {"volume_up", "volume_down", "volume_mute"}:
+            commands = {
+                "volume_up": ["amixer", "set", "Master", "5%+"],
+                "volume_down": ["amixer", "set", "Master", "5%-"],
+                "volume_mute": ["amixer", "set", "Master", "toggle"],
+            }
+            messages = {
+                "volume_up": "Volume increased.",
+                "volume_down": "Volume decreased.",
+                "volume_mute": "Mute toggled.",
+            }
+            return TaskExecutor._run_command(commands[action], messages[action])
+        if action == "open_app" and app:
+            return TaskExecutor._open_application(app)
+        if action == "close_app" and app:
+            return TaskExecutor._close_application(app)
+
+        return False, "No safe action was selected."
+
+    @staticmethod
+    def _run_system_action(action: str) -> Tuple[bool, str]:
+        """Try a native system action, then provide an interactive sudo fallback."""
+        command = TaskExecutor.ACTION_COMMANDS[action]
+
+        try:
+            result = subprocess.run(command, check=False, capture_output=True, text=True)
+            if result.returncode == 0:
+                return True, f"{action.capitalize()} command accepted."
+        except OSError:
+            result = None
+
+        sudo_command = "sudo " + " ".join(command)
+        try:
+            # --hold keeps the terminal visible so sudo prompts and failures are
+            # not lost when Konsole exits its command shell.
+            subprocess.Popen([
+                "konsole",
+                "--hold",
+                "-e",
+                "bash",
+                "-lc",
+                f"{sudo_command}; status=$?; echo; echo 'Command exited with status:' $status; read -r -p 'Press Enter to close...'",
+            ])
+            return True, f"Opening Konsole to run {sudo_command}. Enter your password there if prompted."
+        except OSError as error:
+            return False, f"I could not run {action}: Konsole is unavailable ({error})."
+
+    @staticmethod
+    def _run_command(command: list[str], response: str) -> Tuple[bool, str]:
+        try:
+            result = subprocess.run(command, check=False)
+            if result.returncode == 0:
+                return True, response
+            return False, f"The command {' '.join(command)} was rejected (exit code {result.returncode})."
+        except OSError as error:
+            return False, f"Could not run {' '.join(command)}: {error}"
+
+    @staticmethod
+    def _open_application(app: str) -> Tuple[bool, str]:
+        app_command = TaskExecutor.APP_COMMANDS.get(app.lower())
+        if not app_command:
+            return False, f"I do not have a safe launcher for {app}."
+        try:
+            subprocess.Popen([app_command])
+            return True, f"Opening {app}."
+        except OSError as error:
+            return False, f"Could not open {app}: {error}"
+
+    @staticmethod
+    def _close_application(app: str) -> Tuple[bool, str]:
+        app_command = TaskExecutor.APP_COMMANDS.get(app.lower())
+        if not app_command:
+            return False, f"I do not have a safe closer for {app}."
+        try:
+            subprocess.run(["pkill", app_command], check=False)
+            return True, f"Closing {app}."
+        except OSError as error:
+            return False, f"Could not close {app}: {error}"
     
     @staticmethod
     def _handle_pc_control(user_input: str) -> Tuple[bool, str]:
@@ -125,40 +234,24 @@ class TaskExecutor:
         user_lower = user_input.lower()
         
         try:
-            # Commands that need sudo (shown in konsole)
-            sudo_commands = {
-                "shutdown": "systemctl poweroff",
-                "power off": "systemctl poweroff",
-                "turn off": "systemctl poweroff",
-                "restart": "systemctl reboot",
-                "reboot": "systemctl reboot",
-                "sleep": "systemctl suspend",
-                "suspend": "systemctl suspend",
-            }
-            
-            # Check for sudo-required commands first
-            for keyword, command in sudo_commands.items():
-                if keyword in user_lower:
-                    # Open konsole with the command ready for user to execute with sudo
-                    konsole_cmd = f"konsole -e 'echo Running: sudo {command}; sudo {command}'"
-                    subprocess.Popen(konsole_cmd, shell=True)
-                    return True, f"Opening console to execute: sudo {command}. Please confirm with your sudo password."
+            if any(keyword in user_lower for keyword in ["shutdown", "power off", "turn off"]):
+                return TaskExecutor._run_system_action("shutdown")
+            if any(keyword in user_lower for keyword in ["restart", "reboot"]):
+                return TaskExecutor._run_system_action("reboot")
+            if any(keyword in user_lower for keyword in ["sleep", "suspend"]):
+                return TaskExecutor._run_system_action("suspend")
             
             # Commands that don't need sudo
             if any(kw in user_lower for kw in ["lock", "screen lock"]):
-                subprocess.run(["loginctl", "lock-session"], check=False)
-                return True, "Locking the screen."
+                return TaskExecutor._run_command(["loginctl", "lock-session"], "Locking the screen.")
             
             elif "volume" in user_lower:
                 if "up" in user_lower or "increase" in user_lower:
-                    subprocess.run(["amixer", "set", "Master", "5%+"], check=False)
-                    return True, "Volume increased."
+                    return TaskExecutor._run_command(["amixer", "set", "Master", "5%+"], "Volume increased.")
                 elif "down" in user_lower or "decrease" in user_lower:
-                    subprocess.run(["amixer", "set", "Master", "5%-"], check=False)
-                    return True, "Volume decreased."
+                    return TaskExecutor._run_command(["amixer", "set", "Master", "5%-"], "Volume decreased.")
                 elif "mute" in user_lower:
-                    subprocess.run(["amixer", "set", "Master", "toggle"], check=False)
-                    return True, "Mute toggled."
+                    return TaskExecutor._run_command(["amixer", "set", "Master", "toggle"], "Mute toggled.")
             
             elif "brightness" in user_lower:
                 # Brightness adjustment (requires xrandr or similar)
@@ -184,12 +277,10 @@ class TaskExecutor:
             for app_name, app_command in TaskExecutor.APP_COMMANDS.items():
                 if app_name in user_lower:
                     if "close" in user_lower or "quit" in user_lower:
-                        subprocess.run(["pkill", app_command], check=False)
-                        return True, f"Closing {app_name}."
+                        return TaskExecutor._close_application(app_name)
                     else:
                         # Open the application
-                        subprocess.Popen([app_command])
-                        return True, f"Opening {app_name}."
+                        return TaskExecutor._open_application(app_name)
             
             return False, "Application not recognized."
         
