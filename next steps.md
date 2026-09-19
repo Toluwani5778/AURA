@@ -125,7 +125,17 @@ Make the current assistant predictable before adding major features.
 
 ### Status
 
-- [ ] Not started
+- [x] Complete
+
+### Verified Work
+
+- Added an explicit `AURAState` lifecycle model and wired it into `main.py`.
+- Added synchronous lifecycle events for wakeword detection, transcripts, tools, responses, errors, interruption, and session end.
+- Removed duplicate response printing and made default skill registration idempotent.
+- Added pre-action announcement and session persistence for reboot, shutdown, and suspend.
+- Added cleanup coverage for streams, `PyAudio.terminate()`, interruption, sleep phrases, and session finalization.
+- Added focused regression tests in `test_stage1_stage2.py`.
+- Existing safe workflow remains green with 6/6 tests passing.
 
 ---
 
@@ -159,18 +169,11 @@ class AURAState(Enum):
 
 ### Tasks
 
-- Add a state enum.
-- Add a small synchronous event publisher or observer interface.
-- Publish state changes from the conversation engine.
-- Publish useful events such as:
-  - Wakeword detected
-  - Transcript received
-  - Tool started
-  - Tool completed
-  - Response started
-  - Response completed
-  - Error raised
-- Keep the event layer dependency-light so it can be used by both the HUD and tests.
+- [x] Add a state enum.
+- [x] Add a small synchronous event publisher or observer interface.
+- [x] Publish state changes from the conversation engine.
+- [x] Publish useful events such as wakeword, transcript, tool, response, and error events.
+- [x] Keep the event layer dependency-light so it can be used by both the HUD and tests.
 
 ### Completion Criteria
 
@@ -180,7 +183,18 @@ class AURAState(Enum):
 
 ### Status
 
-- [ ] Not started
+- [x] Complete
+
+### Current Implementation
+
+- `core/state.py` defines the shared `AURAState` enum.
+- `core/events.py` defines `AURAEvent` and `EventPublisher`.
+- `AuraAssistant` accepts an event publisher and emits lifecycle updates.
+- The engine is ready for a HUD subscriber without coupling UI code to assistant logic.
+
+### Next Task
+
+- Begin Stage 3 with a PyQt6 HUD that subscribes to `EventPublisher`.
 
 ---
 
@@ -206,6 +220,23 @@ ui/
     animations.py
     waveform.py
 ```
+
+### Status
+
+- [ ] In progress
+
+### Current Implementation
+
+- `ui/orb.py` contains a transparent, frameless, always-on-top PyQt6 orb.
+- The orb subscribes to `EventPublisher` through a Qt signal for thread-safe updates.
+- Colors and animation behavior currently reflect sleeping, listening, thinking, executing, speaking, waking, and error states.
+- `main.py` runs the assistant loop beside the Qt event loop so the HUD remains responsive.
+
+### Next Task
+
+- Add a compact state label or tooltip for development diagnostics.
+- Verify placement and behavior on the live Fedora desktop.
+- Then add richer animations and audio-reactive waveform behavior.
 
 ### Visual States
 

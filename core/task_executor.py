@@ -5,6 +5,7 @@ Handles different types of tasks AURA can perform (PC control, app opening, Q&A,
 
 import subprocess
 import re
+from urllib.parse import quote_plus
 from typing import Any, Dict, Tuple, Optional
 from enum import Enum
 
@@ -61,6 +62,12 @@ class TaskExecutor:
         "shutdown": ["systemctl", "poweroff"],
         "suspend": ["systemctl", "suspend"],
     }
+
+    SEARCH_ENGINES = {
+        "firefox": "https://www.google.com/search?q={query}",
+        "google": "https://www.google.com/search?q={query}",
+        "duckduckgo": "https://duckduckgo.com/?q={query}",
+    }
     
     @staticmethod
     def classify_task(user_input: str) -> TaskType:
@@ -106,6 +113,20 @@ class TaskExecutor:
             TaskType.PC_CONTROL,
             TaskType.APP_CONTROL,
         }
+
+    @staticmethod
+    def extract_search_request(user_input: str) -> Optional[Dict[str, str]]:
+        """Extract a simple browser search request as a safe local fallback."""
+        match = re.search(
+            r"\bsearch(?:\s+up|\s+for)?\s+(.+?)(?:\s+on\s+(firefox|google|duckduckgo))?[?.!]*$",
+            user_input.strip().lower(),
+        )
+        if not match:
+            return None
+        query = match.group(1).strip()
+        if not query:
+            return None
+        return {"action": "search_web", "query": query, "browser": match.group(2) or "firefox", "app": None}
     
     @staticmethod
     def execute(user_input: str, llm_response: str = "") -> Tuple[bool, str]:
@@ -165,8 +186,26 @@ class TaskExecutor:
             return TaskExecutor._open_application(app)
         if action == "close_app" and app:
             return TaskExecutor._close_application(app)
+        if action == "search_web":
+            return TaskExecutor._search_web(plan.get("query", ""), plan.get("browser", "firefox"))
 
         return False, "No safe action was selected."
+
+    @staticmethod
+    def _search_web(query: str, browser: str = "firefox") -> Tuple[bool, str]:
+        """Open a browser search URL without invoking a shell."""
+        query = str(query).strip()
+        browser = str(browser).lower().strip()
+        template = TaskExecutor.SEARCH_ENGINES.get(browser)
+        if not query or not template:
+            return False, "I need a search query and a supported browser."
+
+        url = template.format(query=quote_plus(query))
+        try:
+            subprocess.Popen(["firefox", url])
+            return True, f"Searching Firefox for {query}."
+        except OSError as error:
+            return False, f"Could not open Firefox for that search: {error}"
 
     @staticmethod
     def _run_system_action(action: str) -> Tuple[bool, str]:
