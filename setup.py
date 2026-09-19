@@ -126,7 +126,7 @@ class AuraSetup:
                     self.print_check(
                         "Ollama Connection",
                         False,
-                        "No models installed. Run: ollama pull qwen3.6:latest"
+                        "No models installed. Run: ollama pull qwen3.8:latest"
                     )
             else:
                 self.print_check("Ollama Connection", False, "Invalid response")

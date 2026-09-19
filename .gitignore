@@ -51,6 +51,7 @@ Thumbs.db
 htmlcov/
 .tox/
 .hypothesis/
+Fixing\ bugs/
 
 # Session & Log Files
 data/sessions/*.json

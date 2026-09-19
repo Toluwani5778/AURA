@@ -58,7 +58,7 @@ USE_CUSTOM_MODEL = False  # Set to True for "hey_sebastian"
 SESSION_TIMEOUT = 600  # 10 minutes
 
 # LLM Model
-OLLAMA_MODEL = "qwen3.6:latest"
+OLLAMA_MODEL = "qwen3.8:latest"
 
 # Voice settings
 WHISPER_MODEL_SIZE = "small"  # Options: tiny, base, small, medium
@@ -184,6 +184,32 @@ Example: `data/sessions/session_20260813_142530.json`
 - Check audio output: `aplay /tmp/test.wav`
 - Verify Kokoro is running: `http://localhost:8880/docs`
 - Check speaker volume: `amixer get Master`
+
+## `RuntimeError: Library libcublas.so.12 is not found or cannot be loaded`
+
+This happens when running inside a Python virtual environment, even though `nvidia-cublas-cu12` is installed and the `.so` file exists on disk. It typically affects `faster-whisper` / `ctranslate2`, since some of their compiled extensions don't bake in a relative path (`RPATH`) to the bundled CUDA libraries the way packages like `torch` do.
+
+A venv only manages `PATH` and `sys.path` — it does not set `LD_LIBRARY_PATH`, which is what the OS-level dynamic linker uses to find `.so` files. So even though `nvidia-cublas-cu12` ships the library inside `site-packages`, the linker doesn't know to look there unless told explicitly.
+
+### Fix
+
+Point `LD_LIBRARY_PATH` at the cuBLAS lib folder inside your venv:
+
+```bash
+source /path/to/your/venv/bin/activate
+export LD_LIBRARY_PATH=/path/to/your/venv/lib/python3.11/site-packages/nvidia/cublas/lib:$LD_LIBRARY_PATH
+python your_script.py
+```
+
+### Make it permanent (per-venv)
+
+Append the export directly to the venv's own `activate` script, so it's set automatically every time you activate it:
+
+```bash
+echo 'export LD_LIBRARY_PATH=/path/to/your/venv/lib/python3.11/site-packages/nvidia/cublas/lib:$LD_LIBRARY_PATH' >> /path/to/your/venv/bin/activate
+```
+
+Adjust the Python version (`python3.11`) and venv path to match your setup. If you have multiple venvs hitting this same error, apply the same fix to each one's `activate` script individually.
 
 ## Advanced Usage 🎯
 

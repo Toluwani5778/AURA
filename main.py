@@ -120,7 +120,7 @@ class AuraAssistant:
                 
                 # Listen for user input
                 try:
-                    user_input, timeout_occurred = self.listen_for_command(timeout=30)
+                    user_input, timeout_occurred = self.listen_for_command(timeout=10)
                     
                     if timeout_occurred or not user_input:
                         print("⚠️ No input detected, continuing to listen...")

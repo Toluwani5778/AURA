@@ -10,6 +10,30 @@ from core.config import (
     USE_CUSTOM_MODEL
 )
 
+import ctypes
+from contextlib import contextmanager
+
+ERROR_HANDLER_FUNC = ctypes.CFUNCTYPE(
+    None, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p
+)
+
+def py_error_handler(filename, line, function, err, fmt):
+    pass
+
+c_error_handler = ERROR_HANDLER_FUNC(py_error_handler)
+
+@contextmanager
+def suppress_alsa_errors():
+    try:
+        asound = ctypes.cdll.LoadLibrary('libasound.so.2')
+        asound.snd_lib_error_set_handler(c_error_handler)
+        yield
+    finally:
+        try:
+            asound.snd_lib_error_set_handler(None)
+        except Exception:
+            pass
+
 openwakeword.utils.download_models()
 
 # AUDIO_PATH = "resources/audio/Input/seb.wav"  # path to the audio file
@@ -34,7 +58,8 @@ def Wakeup_agent(mod=None, wakeword=None, threshold=WAKEWORD_THRESHOLD):
         inference_framework="onnx"
     )
 
-    pa = pyaudio.PyAudio()
+    with suppress_alsa_errors():
+        pa = pyaudio.PyAudio()
 
     # Open a stream to capture audio from the microphone
     stream = pa.open(

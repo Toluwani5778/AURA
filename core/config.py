@@ -25,7 +25,7 @@ SLEEP_WAKEWORD_THRESHOLD = 0.85
 
 # Ollama configuration
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
-OLLAMA_MODEL = "qwen3.6:latest"
+OLLAMA_MODEL = "qwen3.8:latest"
 
 # System prompt for AURA
 SYSTEM_PROMPT = """You are AURA (Adaptive Utility & Reasoning Assistant), a personal AI assistant running on the user's Fedora workstation. 
