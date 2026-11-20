@@ -1,0 +1,21 @@
+[Unit]
+Description=AURA voice assistant
+Documentation=file://%h/Documents/Projects/AURA/README.md
+After=graphical-session.target pipewire.service wireplumber.service
+PartOf=graphical-session.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/Projects/AURA
+ExecStart=%h/Documents/Projects/AURA/myenv/bin/python main.py
+Environment=PYTHONUNBUFFERED=1
+Environment=QT_QPA_PLATFORM=xcb
+Restart=on-failure
+RestartSec=10
+# Ollama (system service) and the Kokoro container start on their own;
+# main.py waits for both to answer before greeting.
+
+[Install]
+WantedBy=graphical-session.target
