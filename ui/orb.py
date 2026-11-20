@@ -39,7 +39,7 @@ TOOL_WORDS = {
     "weather": "Checking the sky", "volume": "Adjusting volume", "media": "Working the music",
     "open_in_browser": "Opening the browser", "system_status": "Checking vitals", "remember": "Noting that down",
     "forget": "Forgetting", "power": "Standing by", "lock_screen": "Locking up", "get_datetime": "Checking the clock",
-    "list_apps": "Looking through your apps",
+    "list_apps": "Looking through your apps", "look_at_screen": "Looking at your screen",
 }
 HALO_HEIGHT = 230
 

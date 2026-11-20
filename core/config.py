@@ -31,6 +31,7 @@ OLLAMA_HOST = _env("OLLAMA_HOST", "http://127.0.0.1:11434")
 # Kokoro, native tool calling. Swap to "qwen3.6:35b-a3b" for a smarter but
 # ~10x slower brain that needs most of the GPU.
 OLLAMA_MODEL = _env("OLLAMA_MODEL", "gemma4:e4b")
+VISION_MODEL = _env("VISION_MODEL", "gemma4:e4b")   # must support images
 OLLAMA_KEEP_ALIVE = _env("OLLAMA_KEEP_ALIVE", "2h")
 OLLAMA_THINK = _env("OLLAMA_THINK", False)    # thinking adds seconds of silence
 OLLAMA_NUM_CTX = _env("OLLAMA_NUM_CTX", 8192)

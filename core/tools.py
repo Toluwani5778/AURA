@@ -400,3 +400,38 @@ def weather(location: str) -> str:
         lines.append(f"{label}: {WEATHER_CODES.get(daily['weather_code'][i], '')}, high {daily['temperature_2m_max'][i]:.0f}, "
                      f"low {daily['temperature_2m_min'][i]:.0f}, {daily['precipitation_probability_max'][i]}% chance of rain.")
     return " ".join(lines)
+
+
+@tool(params={"question": _str("What the user wants to know about their screen")}, required=["question"])
+def look_at_screen(question: str) -> str:
+    """Take a screenshot and look at it to answer a question about what's on the
+    user's screen (an error message, a window, a chart). Only when the user asks."""
+    import base64
+    import tempfile
+    from core.config import OLLAMA_HOST, OLLAMA_KEEP_ALIVE, VISION_MODEL
+    import time
+    path = os.path.join(tempfile.gettempdir(), "aura-screen.png")
+    if os.path.exists(path):
+        os.remove(path)
+    _run(["spectacle", "-b", "-n", "-f", "-o", path], timeout=15)
+    for _ in range(50):  # spectacle may hand off to a running instance and return early
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            break
+        time.sleep(0.1)
+    else:
+        return "I couldn't capture the screen."
+    time.sleep(0.2)
+    try:
+        image = base64.b64encode(Path(path).read_bytes()).decode()
+        response = requests.post(f"{OLLAMA_HOST}/api/chat", timeout=120, json={
+            "model": VISION_MODEL, "stream": False, "think": False, "keep_alive": OLLAMA_KEEP_ALIVE,
+            "messages": [{"role": "user", "images": [image],
+                          "content": f"This is a screenshot of my desktop. {question} "
+                                     "Answer concisely and specifically, quoting any key text."}],
+        })
+        response.raise_for_status()
+        return response.json()["message"]["content"]
+    except (requests.RequestException, KeyError, ValueError) as error:
+        return f"Screen analysis failed: {error}"
+    finally:
+        os.remove(path)
