@@ -51,6 +51,7 @@ Requirements: Fedora with PipeWire, an NVIDIA GPU (CPU works but is slower), Pyt
 sudo dnf install python3.11 portaudio-devel pipewire-utils playerctl
 python3.11 -m venv myenv && source myenv/bin/activate
 pip install -r requirements.txt
+python -c "import openwakeword; openwakeword.utils.download_models()"   # one-time: shared wake-word models
 
 ollama pull gemma4:e4b            # the brain (Ollama runs as a system service)
 docker start kokoro searxng       # voice (:8880) and private web search (:8081)
