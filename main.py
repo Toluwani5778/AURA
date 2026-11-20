@@ -1,329 +1,318 @@
-"""
-AURA - Personal AI Assistant
-Main application loop with wakeword detection, conversation management, and timeouts
+"""AURA - Adaptive Utility & Reasoning Assistant.
+
+    python main.py                 voice mode with HUD; greets you on start
+    python main.py --no-greet      start asleep, wait for "Aura, wake up"
+    python main.py --text          type to AURA in the terminal (no mic/TTS/HUD)
+    python main.py --tune-wakeword print live wake-word scores to pick a threshold
 """
 
-import pyaudio
-import numpy as np
-import time
+import argparse
+import logging
+import os
+import sys
 import threading
-import re
-from PyQt6.QtWidgets import QApplication
-from core.alsa import silence_alsa_errors, suppress_alsa_errors
-from core.llm import ask_VA, plan_action
-from core.memory import SessionManager
+import time
+
+from core.config import (
+    CHECK_IN_WINDOW, DATA_DIR, FOLLOW_UP_WINDOW, LOG_FILE, USER_NAME,
+)
 from core.events import EventPublisher
 from core.state import AURAState
-from core.task_executor import TaskExecutor
-from core.skills import global_skill_registry, initialize_default_skills
-from voice.Text2Speech import speak, play_audio
-from voice.Speech2Text import transcribe_audio
-from voice.Wakeup import Wakeup_agent, listen_for_sleep_word
-from core.config import (
-    SESSION_TIMEOUT, MAX_TIMEOUTS, SLEEP_WAKEWORD, 
-    AUDIO_FORMAT, AUDIO_CHANNELS, AUDIO_RATE, AUDIO_FRAMES_PER_BUFFER
-)
-from ui.orb import AuraHUD
 
-silence_alsa_errors()
+log = logging.getLogger("aura")
+
+
+def setup_logging(verbose=False):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(LOG_FILE)],
+    )
+    for noisy in ("urllib3", "faster_whisper", "httpx"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 class AuraAssistant:
-    """Main AURA Assistant Class"""
-    
-    def __init__(self, event_publisher=None):
-        self.session = None
-        self.audio_stream = None
-        self.running = False
-        self.audio_thread = None
-        self.state = AURAState.SLEEPING
-        self.events = event_publisher or EventPublisher()
-        self.session_saved = False
-        with suppress_alsa_errors():
-            self.pa = pyaudio.PyAudio()
+    """Wires microphone, agent, speaker and HUD together."""
 
+    def __init__(self, events: EventPublisher = None):
+        self.events = events or EventPublisher()
+        self.state = AURAState.SLEEPING
+        self.running = True
+        self.in_conversation = False
+        self.mic = None
+        self.speaker = None
+        self.listener = None
+        self.agent = None
+        self.session = None
+
+    # events -------------------------------------------------------------
     def set_state(self, state: AURAState, **data):
-        """Update the shared state and notify observers."""
         self.state = state
         self.events.publish("state_changed", state=state, **data)
 
     def emit(self, name: str, **data):
-        """Publish a lifecycle event without changing assistant state."""
         return self.events.publish(name, state=self.state, **data)
-    
-    def _get_audio_stream(self):
-        """Get or create audio stream"""
-        if self.audio_stream is None:
-            with suppress_alsa_errors():
-                self.audio_stream = self.pa.open(
-                    format=pyaudio.paInt16,
-                    channels=AUDIO_CHANNELS,
-                    rate=AUDIO_RATE,
-                    input=True,
-                    frames_per_buffer=AUDIO_FRAMES_PER_BUFFER,
-                )
-        return self.audio_stream
-        
-    def speak_response(self, text):
-        """Generate speech and play audio response"""
-        try:
-            self.set_state(AURAState.SPEAKING, text=text)
-            self.emit("response_started", text=text)
-            print(f"🎙️ AURA: {text[:100]}...")  # Print first 100 chars
-            audio_file = speak(text)
-            play_audio(audio_file)
-            self.emit("response_completed", text=text)
-        except Exception as e:
-            self.set_state(AURAState.ERROR, error=str(e))
-            self.emit("error", error=str(e), operation="speech")
-            print(f"❌ Error in speech synthesis: {e}")
-    
-    def listen_for_command(self, timeout=30):
-        """
-        Listen for user voice input using live stream transcription
-        Returns: (user_text, timeout_occurred)
-        """
-        try:
-            self.set_state(AURAState.LISTENING)
-            stream = self._get_audio_stream()
-            user_input = transcribe_audio(stream=stream, duration=timeout)
-            
-            if user_input:
-                self.emit("transcript_received", text=user_input)
-                return user_input, False
-            else:
-                return None, True
-        
-        except Exception as e:
-            self.set_state(AURAState.ERROR, error=str(e))
-            self.emit("error", error=str(e), operation="transcription")
-            print(f"❌ Error during transcription: {e}")
-            return None, True
-    
-    def handle_timeout(self):
-        """Handle timeout scenario - ask if user is still there"""
-        self.session.increment_timeout_count()
-        
-        if self.session.should_force_sleep(MAX_TIMEOUTS):
-            print("😴 Timeout limit reached. Going to sleep...")
-            self.speak_response("I haven't heard from you in a while. I'm going to rest now. Wake me up anytime!")
-            return True  # Signal to end session
-        
-        print("⏰ Session timeout triggered")
-        self.speak_response(f"I haven't heard from you in {SESSION_TIMEOUT} seconds. Are you still there?")
-        return False  # Continue session
-    
-    def check_for_sleep_word(self, transcribed_text):
-        """Check if the transcribed text contains sleep word"""
-        if not transcribed_text:
-            return False
 
-        normalized_input = re.sub(r"[^a-z0-9']+", " ", transcribed_text.lower()).strip()
-        normalized_input = re.sub(r"\s+", " ", normalized_input)
-        sleep_phrases = {
-            SLEEP_WAKEWORD.lower(),
-            "good night aura",
-            "good night aurora",
-            "goodnight aura",
-            "goodnight aurora",
-            "good night",
-            "goodnight",
-        }
-        return any(phrase in normalized_input for phrase in sleep_phrases)
-    
-    def run_session(self):
-        """Run an active AURA session"""
+    @property
+    def level(self) -> float:
+        if self.speaker and self.speaker.speaking:
+            return 0.04 + 0.03 * abs(((time.time() * 7) % 2) - 1)   # gentle shimmer while talking
+        return self.mic.level if self.mic else 0.0
+
+    # startup ------------------------------------------------------------
+    def start(self):
+        from core.agent import Agent
+        from core.llm import OllamaClient
+        from voice.audio import Listener, Microphone
+        from voice.Text2Speech import Speaker, kokoro_ready
+
         self.set_state(AURAState.WAKING)
-        self.session = SessionManager()
-        self.session_saved = False
-        self.session.is_active = True
-        
-        print("\n" + "="*50)
-        print("🚀 AURA Session Started!")
-        print("="*50 + "\n")
-        
-        # Greeting
-        greeting = "Hi there! I'm AURA, your personal AI assistant. How can I help you today?"
-        self.speak_response(greeting)
-        self.session.add_message("assistant", greeting)
-        
-        last_interaction_time = time.time()
-        
+        client = OllamaClient()
+        if not client.wait_until_ready(timeout=180):
+            raise RuntimeError("Ollama is not reachable")
+        for _ in range(90):                      # Kokoro is a Docker container; give it time
+            if kokoro_ready():
+                break
+            time.sleep(2)
+        else:
+            raise RuntimeError("Kokoro TTS is not reachable on its port")
+        threading.Thread(target=client.warm, daemon=True).start()
+        threading.Thread(target=self._preload_whisper, daemon=True).start()
+
+        self.agent = Agent(client=client, on_tool=self._on_tool)
+        self.speaker = Speaker()
+        self.speaker.on_start = self._on_speech_start
+        self.speaker.on_idle = self._on_speech_idle
+        self.mic = Microphone()
+        self.listener = Listener(self.mic, is_speaking=lambda: self.speaker.speaking,
+                                 quiet_since=lambda: self.speaker.quiet_since)
+
+    @staticmethod
+    def _preload_whisper():
+        from voice.Speech2Text import get_model
+        get_model()
+
+    # callbacks ----------------------------------------------------------
+    def _on_tool(self, name, args):
+        self.set_state(AURAState.EXECUTING, tool=name)
+        self.emit("tool_started", tool=name, args=args)
+
+    def _on_speech_start(self, text):
+        if self.state != AURAState.SPEAKING:
+            self.set_state(AURAState.SPEAKING)
+        self.emit("response_started", text=text)
+
+    def _on_speech_idle(self):
+        if self.in_conversation and self.state == AURAState.SPEAKING:
+            self.set_state(AURAState.LISTENING)
+
+    def _barge_in(self):
+        log.info("Interrupted by wake word")
+        self.speaker.stop()
+        self.emit("barge_in")
+
+    # conversation -------------------------------------------------------
+    def say(self, text):
+        self.session.add("assistant", text)
+        self.speaker.say(text)
+
+    def converse(self, first_of_day=False):
+        """One conversation: greet, then talk until goodbye or silence."""
+        from core.memory import SessionLog
+        from voice.Speech2Text import transcribe
+
+        self.in_conversation = True
+        self.session = SessionLog()
+        self.agent.reset()
+        self.set_state(AURAState.THINKING)
         try:
-            while self.running and self.session.is_active:
-                # Check for timeout
-                current_time = time.time()
-                idle_time = current_time - last_interaction_time
-                
-                if idle_time > SESSION_TIMEOUT:
-                    should_sleep = self.handle_timeout()
-                    if should_sleep:
-                        break
-                    last_interaction_time = current_time  # Reset timer
-                
-                # Listen for user input
-                try:
-                    user_input, timeout_occurred = self.listen_for_command(timeout=10)
-                    
-                    if timeout_occurred or not user_input:
-                        print("⚠️ No input detected, continuing to listen...")
+            greeting = self.agent.greet(on_sentence=self.speaker.say, first_of_day=first_of_day)
+        except Exception as error:
+            log.warning("Greeting failed: %s", error)
+            greeting = "Hi! I'm here. What can I do for you?"
+            self.speaker.say(greeting)
+        log.info("AURA: %s", greeting)
+        self.session.add("assistant", greeting)
+        checked_in = False
+
+        try:
+            while self.running:
+                if not self.speaker.speaking:
+                    self.set_state(AURAState.LISTENING)
+                audio = self.listener.record_utterance(
+                    wait_seconds=CHECK_IN_WINDOW if checked_in else FOLLOW_UP_WINDOW,
+                    on_speech_start=lambda: self.set_state(AURAState.LISTENING, speech=True),
+                    on_barge_in=self._barge_in,
+                )
+                if audio is None:
+                    if self.speaker.speaking:
                         continue
-                    
-                    # Reset timeout counter on successful input
-                    self.session.reset_timeout_count()
-                    last_interaction_time = time.time()
-                    
-                    # Check for sleep word
-                    if self.check_for_sleep_word(user_input):
-                        print(f"User said sleep word: '{user_input}'")
-                        sleep_response = "Good night! I'll be here if you need me. Sleep well!"
-                        self.session.add_message("user", user_input)
-                        self.session.add_message("assistant", sleep_response)
-                        self.speak_response(sleep_response)
+                    if checked_in:
+                        self.say("I'll let you get to it. Just say Aura, wake up when you need me.")
                         break
-                    
-                    print(f"👤 User: {user_input}")
-                    self.session.add_message("user", user_input)
-                    self.set_state(AURAState.PROCESSING, text=user_input)
-                    
-                    task_type = TaskExecutor.classify_task(user_input)
-                    context = self.session.get_context_for_llm()
-                    action_plan = {"action": "none", "app": None}
-                    if TaskExecutor.may_be_action_request(user_input):
-                        self.set_state(AURAState.THINKING, text=user_input)
-                        action_plan = plan_action(user_input, context)
-                        if action_plan["action"] == "none":
-                            action_plan = TaskExecutor.extract_search_request(user_input) or action_plan
-
-                    # Direct actions are deterministic and should happen before
-                    # an LLM response, while conversation remains model-driven.
-                    if action_plan["action"] != "none":
-                        self.emit("tool_started", action=action_plan["action"], app=action_plan.get("app"))
-                        if action_plan["action"] in {"reboot", "shutdown", "suspend"}:
-                            notice = f"I'm preparing to {action_plan['action']} the computer now. I'll save this session first."
-                            self.session.add_message("assistant", notice)
-                            self.speak_response(notice)
-                            self.session.is_active = False
-                            self.session.save_session()
-                            self.session_saved = True
-                        self.set_state(AURAState.EXECUTING, action=action_plan["action"])
-                        task_success, task_response = TaskExecutor.execute_plan(action_plan)
-                        self.emit("tool_completed", action=action_plan["action"], success=task_success)
-                        if task_success:
-                            final_response = task_response
-                        else:
-                            final_response = ask_VA(user_input, context)
-                    elif task_type.value in {"pc_control", "app_control"}:
-                        task_success, task_response = TaskExecutor.execute(user_input)
-                        if task_success:
-                            final_response = task_response
-                        else:
-                            final_response = ask_VA(user_input, context)
-                    else:
-                        # Narrow utility skills may answer immediately. Anything
-                        # ambiguous, contextual, or conversational goes to Ollama.
-                        skill_success, skill_response, skill_used = global_skill_registry.execute(
-                            user_input,
-                            excluded_names={"Capabilities"},
-                        )
-
-                        if skill_success and skill_response:
-                            final_response = skill_response
-                            print(f"💡 Skill '{skill_used.name}' used")
-                        else:
-                            final_response = ask_VA(user_input, context)
-                    
-                    self.session.add_message("assistant", final_response)
-                    
-                    # Speak the response
-                    self.speak_response(final_response)
-                    
-                except Exception as e:
-                    self.set_state(AURAState.ERROR, error=str(e))
-                    self.emit("error", error=str(e), operation="interaction")
-                    print(f"❌ Error during interaction: {e}")
+                    checked_in = True
+                    self.say("Still there? Take your time.")
                     continue
-        
-        except KeyboardInterrupt:
-            print("\n⚠️ Session interrupted by user")
-            self.emit("session_interrupted")
-        
+
+                self.set_state(AURAState.PROCESSING)
+                text = transcribe(audio)
+                if not text:
+                    continue
+                checked_in = False
+                log.info("You: %s", text)
+                self.emit("transcript_received", text=text)
+                self.session.add("user", text)
+
+                self.set_state(AURAState.THINKING)
+                try:
+                    reply = self.agent.respond(text, on_sentence=self.speaker.say)
+                except Exception as error:
+                    log.exception("Agent failed")
+                    self.set_state(AURAState.ERROR, error=str(error))
+                    self.emit("error", error=str(error), operation="agent")
+                    reply = "Sorry, my brain hiccuped. Could you say that again?"
+                    self.speaker.say(reply)
+                log.info("AURA: %s", reply)
+                self.session.add("assistant", reply)
+                if self.agent.end_requested:
+                    break
         finally:
-            self.end_session()
-    
-    def end_session(self):
-        """End the current session and save history"""
-        if self.session:
-            if not self.session_saved:
-                self.session.end_session()
-                self.session_saved = True
-            else:
-                self.session.is_active = False
-            self.emit("session_ended", session_name=self.session.session_name)
-            summary = self.session.get_session_summary()
-            print("\n" + "="*50)
-            print("📊 Session Summary:")
-            print(f"   Duration: {summary['duration_seconds']:.1f} seconds")
-            print(f"   Messages: {summary['message_count']}")
-            print(f"   Timeouts: {summary['timeout_count']}")
-            print("="*50 + "\n")
-        
+            self.speaker.wait()
+            self.in_conversation = False
+            self.session.save()
+            self.emit("session_ended", session_name=self.session.name)
+
+    def run(self, greet=True):
+        try:
+            self.start()
+            if greet:
+                self.converse(first_of_day=True)
+            while self.running:
+                self.set_state(AURAState.SLEEPING)
+                log.info("Sleeping. Say 'Aura, wake up'.")
+                if self.listener.wait_for_wake_word(should_stop=lambda: not self.running):
+                    self.emit("wakeword_detected")
+                    self.converse()
+        except Exception as error:
+            log.exception("Fatal error")
+            self.set_state(AURAState.ERROR, error=str(error))
+            self.emit("error", error=str(error), operation="main_loop")
+            raise
+        finally:
+            self.shutdown()
+
+    def shutdown(self):
         self.running = False
+        if self.speaker:
+            self.speaker.stop()
+        if self.mic:
+            self.mic.close()
+            self.mic = None
         self.set_state(AURAState.SLEEPING)
-        
-        # Cleanup audio resources
-        if self.audio_stream:
-            self.audio_stream.stop_stream()
-            self.audio_stream.close()
-        self.pa.terminate()
+
+
+# ---------------------------------------------------------------------------
+def run_text_mode():
+    from core.agent import Agent
+    agent = Agent(on_tool=lambda name, args: print(f"   ⚙ {name} {args}"))
+    print("AURA text mode. Ctrl+D to quit.\n")
+    print("AURA:", agent.greet())
+    while True:
+        try:
+            text = input("\nYou: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if text:
+            print("AURA:", agent.respond(text))
+            if agent.end_requested:
+                break
+
+
+def run_wakeword_tuner():
+    from voice.audio import Microphone, WakeWord
+    mic, wake = Microphone(), WakeWord()
+    print("Say 'Aura, wake up' a few times. Ctrl+C to stop.\n")
+    peak = 0.0
+    try:
+        while True:
+            frame = mic.read()
+            if frame is None:
+                continue
+            score = wake.score(frame)
+            peak = max(peak, score)
+            if score > 0.05:
+                print(f"score {score:.3f}   peak {peak:.3f}   {'#' * int(score * 50)}")
+    except KeyboardInterrupt:
+        print(f"\nPeak score: {peak:.3f}. Set AURA_WAKEWORD_THRESHOLD (or WAKEWORD_THRESHOLD in "
+              f"core/config.py) to about {max(0.1, peak * 0.7):.2f}.")
+    finally:
+        mic.close()
+
+
+def run_voice_mode(greet=True, hud=True):
+    assistant = AuraAssistant()
+    if not hud:
+        try:
+            assistant.run(greet=greet)
+        except KeyboardInterrupt:
+            pass
+        return
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "xcb")   # Wayland ignores window placement
+    from PyQt6.QtWidgets import QApplication
+    from ui.orb import AuraHUD
+
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
+    halo = AuraHUD(level_source=lambda: assistant.level)
+    halo.place()
+    halo.show()
+    assistant.events.subscribe(halo.receive_event)
+
+    def worker():
+        try:
+            assistant.run(greet=greet)
+        except Exception:
+            time.sleep(3)          # leave the error visible on the HUD briefly
+        finally:
+            app.quit()
+
+    threading.Thread(target=worker, name="aura-assistant", daemon=True).start()
+    import signal
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
+    signal.signal(signal.SIGTERM, lambda *_: app.quit())
+    tick = __import__("PyQt6.QtCore", fromlist=["QTimer"]).QTimer()
+    tick.timeout.connect(lambda: None)   # lets Python handle signals while Qt runs
+    tick.start(200)
+    app.exec()
+    assistant.running = False
+    assistant.shutdown()
 
 
 def main():
-    """Main application entry point"""
-    print("\n" + "🌟 "*20)
-    print("Welcome to AURA - Adaptive Utility & Reasoning Assistant")
-    print("🌟 "*20 + "\n")
-    
-    # Initialize skills framework
-    initialize_default_skills()
-    
-    app = QApplication.instance() or QApplication([])
-    hud = AuraHUD()
-    hud.place_top_right()
-    hud.show()
+    parser = argparse.ArgumentParser(description="AURA voice assistant")
+    parser.add_argument("--text", action="store_true", help="chat by typing, no audio")
+    parser.add_argument("--no-greet", action="store_true", help="start asleep instead of greeting")
+    parser.add_argument("--no-hud", action="store_true", help="run without the on-screen halo")
+    parser.add_argument("--tune-wakeword", action="store_true", help="show live wake-word scores")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    args = parser.parse_args()
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    setup_logging(args.verbose)
+    from core.alsa import silence_alsa_errors
+    silence_alsa_errors()
 
-    assistant = AuraAssistant(event_publisher=EventPublisher())
-    assistant.events.subscribe(hud.receive_event)
-    assistant.running = True
-
-    def assistant_loop():
-        try:
-            while assistant.running:
-                print("👂 Waiting for wake word...")
-                assistant.set_state(AURAState.WAKING)
-
-                if Wakeup_agent():
-                    assistant.emit("wakeword_detected")
-                    print("✅ Wake word detected!")
-                    assistant.run_session()
-                else:
-                    assistant.set_state(AURAState.SLEEPING)
-
-                print("\n❓ Say the wake word again to start a new session, or exit the program.")
-        except KeyboardInterrupt:
-            print("\n\n👋 Shutting down AURA...")
-        except Exception as error:
-            assistant.set_state(AURAState.ERROR, error=str(error))
-            assistant.emit("error", error=str(error), operation="main_loop")
-            print(f"\n❌ Fatal error: {error}")
-        finally:
-            assistant.running = False
-            print("Goodbye! 👋\n")
-
-    worker = threading.Thread(target=assistant_loop, name="aura-assistant", daemon=True)
-    worker.start()
-    app.aboutToQuit.connect(lambda: setattr(assistant, "running", False))
-    app.exec()
+    if args.text:
+        run_text_mode()
+    elif args.tune_wakeword:
+        run_wakeword_tuner()
+    else:
+        log.info("Starting AURA%s", f" for {USER_NAME}" if USER_NAME else "")
+        run_voice_mode(greet=not args.no_greet, hud=not args.no_hud)
 
 
 if __name__ == "__main__":

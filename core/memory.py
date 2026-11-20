@@ -1,123 +1,100 @@
-"""
-Session Manager Module
-Handles conversation context, memory, and session state for AURA
-"""
+"""Session transcripts and long-term memory for AURA."""
 
-from datetime import datetime
-from typing import List, Dict, Any
 import json
-import os
+import logging
+import threading
+from datetime import datetime
+from pathlib import Path
+from typing import List
 
-class Message:
-    """Represents a single message in the conversation"""
-    def __init__(self, role: str, content: str, timestamp: float = None):
-        self.role = role  # "user" or "assistant"
-        self.content = content
-        self.timestamp = timestamp or datetime.now().timestamp()
-    
-    def to_dict(self):
-        return {
-            "role": self.role,
-            "content": self.content,
-            "timestamp": self.timestamp
-        }
+from core.config import MEMORY_FILE, SESSIONS_DIR
+from core.tools import tool
+
+log = logging.getLogger("aura.memory")
 
 
-class SessionManager:
-    """Manages conversation context and session state"""
-    
-    def __init__(self, session_name: str = None):
-        self.session_name = session_name or f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        self.messages: List[Message] = []
-        self.conversation_context = ""
-        self.session_start_time = datetime.now().timestamp()
-        self.last_interaction_time = self.session_start_time
-        self.timeout_count = 0
-        self.is_active = False
-        
-    def add_message(self, role: str, content: str):
-        """Add a message to the conversation history"""
-        message = Message(role, content)
-        self.messages.append(message)
-        self.last_interaction_time = message.timestamp
-        self._update_context()
-        
-    def get_context_for_llm(self) -> str:
-        """
-        Prepare conversation context for LLM
-        Returns a formatted string suitable for the LLM prompt
-        """
-        if not self.messages:
-            return "This is the start of the conversation."
-        
-        context_lines = []
-        context_lines.append("Conversation history:")
-        context_lines.append("-" * 40)
-        
-        for msg in self.messages[-10:]:  # Keep last 10 messages for context
-            role_display = "USER" if msg.role == "user" else "AURA"
-            context_lines.append(f"{role_display}: {msg.content}")
-        
-        context_lines.append("-" * 40)
-        return "\n".join(context_lines)
-    
-    def _update_context(self):
-        """Update the internal conversation context string"""
-        self.conversation_context = self.get_context_for_llm()
-    
-    def get_session_duration(self) -> float:
-        """Get session duration in seconds"""
-        return datetime.now().timestamp() - self.session_start_time
-    
-    def get_idle_time(self) -> float:
-        """Get time since last interaction in seconds"""
-        return datetime.now().timestamp() - self.last_interaction_time
-    
-    def increment_timeout_count(self):
-        """Increment timeout counter"""
-        self.timeout_count += 1
-    
-    def reset_timeout_count(self):
-        """Reset timeout counter after user interaction"""
-        self.timeout_count = 0
-    
-    def should_force_sleep(self, max_timeouts: int = 2) -> bool:
-        """Check if session should force sleep (too many timeouts)"""
-        return self.timeout_count >= max_timeouts
-    
-    def get_session_summary(self) -> Dict[str, Any]:
-        """Get a summary of the session"""
-        return {
-            "session_name": self.session_name,
-            "duration_seconds": self.get_session_duration(),
-            "message_count": len(self.messages),
-            "timeout_count": self.timeout_count,
-            "last_interaction": self.last_interaction_time,
-            "is_active": self.is_active
-        }
-    
-    def save_session(self, filepath: str = None):
-        """Save session history to a JSON file"""
-        if filepath is None:
-            filepath = f"data/sessions/{self.session_name}.json"
-        
-        # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        
-        session_data = {
-            "session_name": self.session_name,
-            "session_start": datetime.fromtimestamp(self.session_start_time).isoformat(),
-            "session_duration": self.get_session_duration(),
-            "messages": [msg.to_dict() for msg in self.messages],
-            "summary": self.get_session_summary()
-        }
-        
-        with open(filepath, "w") as f:
-            json.dump(session_data, f, indent=2)
-        
-        print(f"Session saved to {filepath}")
-    
-    def end_session(self):
-        """End the current session"""
-        self.is_active = False
-        self.save_session()
+class SessionLog:
+    """Records one conversation (wake -> sleep) and saves it exactly once."""
+
+    def __init__(self, directory: Path = SESSIONS_DIR):
+        self.started = datetime.now()
+        self.name = f"session_{self.started:%Y%m%d_%H%M%S}"
+        self.path = Path(directory) / f"{self.name}.json"
+        self.messages: List[dict] = []
+        self.saved = False
+
+    def add(self, role: str, content: str) -> None:
+        self.messages.append({"role": role, "content": content,
+                              "time": datetime.now().isoformat(timespec="seconds")})
+
+    def save(self) -> None:
+        if self.saved or not self.messages:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps({
+            "session": self.name,
+            "started": self.started.isoformat(timespec="seconds"),
+            "ended": datetime.now().isoformat(timespec="seconds"),
+            "messages": self.messages,
+        }, indent=2))
+        self.saved = True
+        log.info("Session saved to %s", self.path)
+
+
+class LongTermMemory:
+    """Durable facts about the user, injected into every system prompt."""
+
+    def __init__(self, path: Path = MEMORY_FILE):
+        self.path = Path(path)
+        self._lock = threading.Lock()
+        self.facts: List[dict] = []
+        if self.path.exists():
+            try:
+                self.facts = json.loads(self.path.read_text()).get("facts", [])
+            except (OSError, ValueError):
+                log.warning("Could not read %s; starting empty", self.path)
+
+    def _save(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps({"facts": self.facts}, indent=2))
+
+    def add(self, fact: str) -> str:
+        fact = fact.strip()
+        with self._lock:
+            if any(f["fact"].lower() == fact.lower() for f in self.facts):
+                return "I already knew that."
+            self.facts.append({"fact": fact, "added": datetime.now().isoformat(timespec="seconds")})
+            self._save()
+        return f"Remembered: {fact}"
+
+    def forget(self, about: str) -> str:
+        about = about.lower().strip()
+        with self._lock:
+            before = len(self.facts)
+            self.facts = [f for f in self.facts if about not in f["fact"].lower()]
+            removed = before - len(self.facts)
+            self._save()
+        return f"Forgot {removed} item(s)." if removed else "I had nothing stored about that."
+
+    def as_prompt(self) -> str:
+        if not self.facts:
+            return ""
+        return "Things you know about the user:\n" + "\n".join(f"- {f['fact']}" for f in self.facts)
+
+
+memory = LongTermMemory()
+
+
+@tool(params={"fact": {"type": "string", "description": "A short fact, preference or reminder about the user"}},
+      required=["fact"])
+def remember(fact: str) -> str:
+    """Store something about the user permanently (preferences, names, projects,
+    routines). Use when the user says 'remember...' or shares a lasting preference."""
+    return memory.add(fact)
+
+
+@tool(params={"about": {"type": "string", "description": "Words identifying what to forget"}},
+      required=["about"])
+def forget(about: str) -> str:
+    """Delete stored memories matching some words, when the user asks you to forget."""
+    return memory.forget(about)

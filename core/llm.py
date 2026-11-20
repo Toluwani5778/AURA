@@ -1,78 +1,74 @@
+"""Thin streaming client for Ollama's /api/chat endpoint."""
+
 import json
+import logging
+import time
+from typing import Iterator
+
 import requests
-from core.config import OLLAMA_URL, OLLAMA_MODEL, SYSTEM_PROMPT
 
-def ask_VA(prompt, context=""):
-    """
-    Query the LLM with a prompt and optional conversation context
-    
-    Args:
-        prompt: The user's current input/question
-        context: Previous conversation context for memory
-    
-    Returns:
-        str: The LLM's response
-    """
-    # Combine system prompt, context, and current prompt
-    full_prompt = f"{SYSTEM_PROMPT}\n\n{context}\n\nUser: {prompt}\n\nAURA:"
-    
-    response = requests.post(
-        OLLAMA_URL,
-        json={
-            "model": OLLAMA_MODEL,
-            "prompt": full_prompt,
-            "stream": False
+from core.config import (
+    OLLAMA_HOST, OLLAMA_KEEP_ALIVE, OLLAMA_MODEL, OLLAMA_NUM_CTX, OLLAMA_THINK,
+)
+
+log = logging.getLogger("aura.llm")
+
+
+class OllamaClient:
+    def __init__(self, host=OLLAMA_HOST, model=OLLAMA_MODEL):
+        self.host = host.rstrip("/")
+        self.model = model
+
+    def is_up(self) -> bool:
+        try:
+            return requests.get(f"{self.host}/api/tags", timeout=2).ok
+        except requests.RequestException:
+            return False
+
+    def wait_until_ready(self, timeout=120) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.is_up():
+                return True
+            time.sleep(2)
+        return False
+
+    def warm(self) -> None:
+        """Load the model into VRAM now so the first reply isn't a cold start."""
+        try:
+            requests.post(
+                f"{self.host}/api/chat",
+                json={"model": self.model, "messages": [], "keep_alive": OLLAMA_KEEP_ALIVE},
+                timeout=120,
+            )
+        except requests.RequestException as error:
+            log.warning("Could not warm %s: %s", self.model, error)
+
+    def chat_stream(self, messages, tools=None) -> Iterator[dict]:
+        """Yield streamed chunks: {"content": str} and/or {"tool_calls": [...]}."""
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "stream": True,
+            "think": OLLAMA_THINK,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
+            "options": {"num_ctx": OLLAMA_NUM_CTX, "temperature": 0.6},
         }
-    )
-    
-    return response.json()["response"].strip()
-
-
-def plan_action(prompt, context=""):
-    """Return a validated allowlisted action inferred by Ollama."""
-    planner_prompt = f"""You are AURA's action planner. Infer the user's immediate intent from the latest request and context.
-Return JSON only with exactly these keys: action, app, query, browser.
-Allowed action values: none, reboot, shutdown, suspend, lock, volume_up, volume_down, volume_mute, open_app, close_app, search_web.
-For open_app or close_app, app must be one of: firefox, chrome, chromium, vscode, terminal, konsole, spotify, vlc, blender, gimp, thunderbird, nautilus.
-For search_web, query must contain the requested search terms and browser must be firefox, google, or duckduckgo.
-Use action none for conversation, questions, praise, thanks, or unclear requests.
-Only select reboot, shutdown, or suspend when the user clearly asks for that operation.
-Never return shell commands, explanations, markdown, or extra keys.
-
-{context}
-Latest user request: {prompt}"""
-
-    try:
-        response = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": OLLAMA_MODEL,
-                "prompt": planner_prompt,
-                "format": "json",
-                "stream": False,
-            },
-            timeout=30,
-        )
-        plan = json.loads(response.json().get("response", "{}"))
-    except (OSError, ValueError, KeyError, requests.RequestException):
-        return {"action": "none", "app": None, "query": "", "browser": "firefox"}
-
-    allowed_actions = {
-        "none", "reboot", "shutdown", "suspend", "lock",
-        "volume_up", "volume_down", "volume_mute", "open_app", "close_app", "search_web",
-    }
-    allowed_apps = {
-        "firefox", "chrome", "chromium", "vscode", "terminal", "konsole",
-        "spotify", "vlc", "blender", "gimp", "thunderbird", "nautilus",
-    }
-    action = plan.get("action")
-    app = plan.get("app")
-    if action not in allowed_actions:
-        return {"action": "none", "app": None, "query": "", "browser": "firefox"}
-    if action in {"open_app", "close_app"} and app not in allowed_apps:
-        return {"action": "none", "app": None, "query": "", "browser": "firefox"}
-    browser = plan.get("browser", "firefox")
-    query = plan.get("query", "")
-    if action == "search_web" and (browser not in {"firefox", "google", "duckduckgo"} or not str(query).strip()):
-        return {"action": "none", "app": None, "query": "", "browser": "firefox"}
-    return {"action": action, "app": app, "query": query, "browser": browser}
+        if tools:
+            payload["tools"] = tools
+        with requests.post(
+            f"{self.host}/api/chat", json=payload, stream=True, timeout=(5, 120)
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                chunk = json.loads(line)
+                if "error" in chunk:
+                    raise RuntimeError(chunk["error"])
+                message = chunk.get("message", {})
+                yield {
+                    "content": message.get("content", ""),
+                    "tool_calls": message.get("tool_calls") or [],
+                    "done": chunk.get("done", False),
+                }
