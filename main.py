@@ -273,10 +273,13 @@ def run_voice_mode(greet=True, hud=True):
     halo.show()
     assistant.events.subscribe(halo.receive_event)
 
+    failed = []
+
     def worker():
         try:
             assistant.run(greet=greet)
-        except Exception:
+        except Exception as error:
+            failed.append(error)
             time.sleep(3)          # leave the error visible on the HUD briefly
         finally:
             app.quit()
@@ -291,6 +294,8 @@ def run_voice_mode(greet=True, hud=True):
     app.exec()
     assistant.running = False
     assistant.shutdown()
+    if failed:
+        sys.exit(1)                # non-zero so systemd's Restart=on-failure kicks in
 
 
 def main():

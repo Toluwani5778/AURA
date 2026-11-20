@@ -125,6 +125,11 @@ ALIASES = {
 }
 
 
+# Never pkill these: they would match the shell, the desktop or AURA herself.
+UNSAFE_PROCESS_NAMES = {"sh", "bash", "zsh", "env", "java", "flatpak", "gio", "kioclient", "xdg-open",
+                        "plasmashell", "kwin_wayland", "systemd", "dbus-launch", "sudo", "pkexec"}
+
+
 @dataclass
 class DesktopApp:
     desktop_id: str
@@ -137,8 +142,11 @@ class DesktopApp:
         if self.flatpak_id:
             match = re.search(r"--command=(\S+)", self.exec_line)
             return match.group(1) if match else ""
-        first = self.exec_line.split()[0] if self.exec_line else ""
-        return os.path.basename(first)
+        words = self.exec_line.split()
+        while words and (os.path.basename(words[0]) == "env" or "=" in words[0]):
+            words.pop(0)            # skip "env VAR=value" prefixes
+        name = os.path.basename(words[0]) if words else ""
+        return "" if name in UNSAFE_PROCESS_NAMES or name.startswith("python") else name
 
 
 def _desktop_dirs():
@@ -222,9 +230,7 @@ def close_app(name: str) -> str:
         proc = app.process_name
         if not proc:
             return f"I don't know which process belongs to {app.name}."
-        result = _run(["pkill", "-x", proc])
-        if result.returncode == 1:
-            result = _run(["pkill", "-f", proc])
+        result = _run(["pkill", "-x", proc[:15]])   # exact name only (kernel comm is 15 chars)
     if result.returncode == 0:
         return f"Closed {app.name}."
     return f"{app.name} doesn't appear to be running."

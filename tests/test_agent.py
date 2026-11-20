@@ -148,3 +148,42 @@ class EventTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConfirmationSafetyTests(unittest.TestCase):
+    def _agent(self, ran):
+        tools = ToolRegistry()
+        tools.register(Tool("power", "power", lambda action: ran.append(action) or "Shutdown started.",
+                            {"action": {"type": "string"}}, risk=CONFIRM))
+        return make_agent([("Sure, shutting down!", [call("power", action="shutdown")]),
+                           ("It's noon.", [])], tools)
+
+    def test_yes_buried_in_a_question_does_not_confirm(self):
+        ran = []
+        agent = self._agent(ran)
+        agent.respond("shut down")
+        agent.respond("ok what time is it first and then tell me the weather")
+        self.assertEqual(ran, [])
+
+    def test_stale_yes_does_not_confirm(self):
+        import core.agent as agent_module
+        ran = []
+        agent = self._agent(ran)
+        agent.respond("shut down")
+        agent.pending = agent.pending[:2] + (agent.pending[2] - agent_module.CONFIRM_TIMEOUT - 1,)
+        agent.respond("yes")
+        self.assertEqual(ran, [])
+
+    def test_model_text_in_confirm_round_is_not_spoken(self):
+        ran = []
+        agent = self._agent(ran)
+        spoken = []
+        agent.respond("shut down", on_sentence=spoken.append)
+        self.assertEqual(len(spoken), 1)
+        self.assertTrue(spoken[0].startswith("Just to be sure"))
+
+    def test_generic_exec_names_are_never_killable(self):
+        from core.tools import DesktopApp
+        self.assertEqual(DesktopApp("x", "X", "env FOO=1 sh -c thing").process_name, "")
+        self.assertEqual(DesktopApp("x", "X", "env GDK=1 /usr/bin/gimp %U").process_name, "gimp")
+        self.assertEqual(DesktopApp("x", "X", "python3 -m foo").process_name, "")

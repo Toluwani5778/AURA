@@ -15,6 +15,7 @@ import datetime as dt
 import json
 import logging
 import re
+import time
 from typing import Callable, List, Optional
 
 from core import memory as memory_module  # registers remember/forget tools
@@ -47,6 +48,7 @@ Current local time: {now}.
 
 YES = re.compile(r"\b(yes|yeah|yep|yup|sure|do it|go ahead|confirm|affirmative|please do|okay|ok)\b", re.I)
 NO = re.compile(r"\b(no|nope|cancel|don't|do not|stop|never ?mind|wait)\b", re.I)
+CONFIRM_TIMEOUT = 30          # seconds a pending dangerous action stays valid
 SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
 
@@ -137,7 +139,7 @@ class Agent:
             if self.pending:
                 # Ask deterministically; never let the model narrate an
                 # action that hasn't happened.
-                question = self._confirmation_question(*self.pending)
+                question = self._confirmation_question(*self.pending[:2])
                 self.history.append({"role": "assistant", "content": question})
                 reply_parts.clear()
                 reply_parts.append(question)
@@ -159,7 +161,7 @@ class Agent:
         if name == "end_conversation":
             self.end_requested = True
         if tool_obj.risk == CONFIRM:
-            self.pending = (tool_obj, args)
+            self.pending = (tool_obj, args, time.time())
             return ("NOT executed yet: this action needs confirmation. Ask the user, in one short "
                     "sentence, to confirm with yes or no. Do not claim it has happened.")
         return self.tools.run(name, args)
@@ -172,11 +174,16 @@ class Agent:
         return f"Just to be sure, do you want me to {phrases.get(action, action)}?"
 
     def _resolve_pending(self, user_text: str, on_sentence) -> Optional[str]:
-        tool_obj, args = self.pending
+        tool_obj, args, asked_at = self.pending
         self.pending = None
+        words = re.findall(r"[a-z']+", user_text.lower())
+        if time.time() - asked_at > CONFIRM_TIMEOUT:
+            return None  # stale: never act on a late "yes"
         if NO.search(user_text):
             reply = "Okay, I won't."
-        elif YES.search(user_text):
+        elif YES.search(user_text) and len(words) <= 5:
+            # Only a short, standalone yes counts ("yes", "yeah do it"), so
+            # "ok, what time is it first?" or background chatter can't confirm.
             result = self.tools.run(tool_obj.name, args)
             done = {"shutdown": "Okay, shutting down now. Goodbye!", "reboot": "Okay, restarting now. See you soon!",
                     "suspend": "Okay, going to sleep now.", "logout": "Okay, logging you out."}
@@ -190,8 +197,12 @@ class Agent:
         return reply
 
     def _stream_once(self, on_sentence, reply_parts):
-        """One model call. Emits finished sentences as they arrive."""
-        buffer, content, tool_calls = "", "", []
+        """One model call. Emits finished sentences as they arrive.
+
+        The first sentence is held until a second one arrives or the stream
+        ends: tool calls come at the end, and if one needs confirmation we
+        must not have already said "Sure, shutting down!"."""
+        buffer, content, tool_calls, held = "", "", [], []
         for chunk in self.client.chat_stream(self._messages(), tools=self.tools.schemas()):
             tool_calls.extend(chunk["tool_calls"])
             piece = chunk["content"]
@@ -200,9 +211,17 @@ class Agent:
             content += piece
             buffer += piece
             *done, buffer = SENTENCE_END.split(buffer)
-            for sentence in done:
+            held.extend(done)
+            if len(held) >= 2:
+                for sentence in held:
+                    self._emit(sentence, on_sentence, reply_parts)
+                held = []
+        held.append(buffer)
+        needs_confirm = any((self.tools.get(c.get("function", {}).get("name", "")) or Tool("", "", None)).risk
+                            == CONFIRM for c in tool_calls)
+        if not needs_confirm:
+            for sentence in held:
                 self._emit(sentence, on_sentence, reply_parts)
-        self._emit(buffer, on_sentence, reply_parts)
         return content, tool_calls
 
     @staticmethod

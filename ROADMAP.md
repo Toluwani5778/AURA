@@ -36,8 +36,8 @@ AURA was rebuilt from a rule-based pipeline (keyword classifier → skills → c
 
 ## Known issues
 
-- **VRAM contention:** other Ollama clients (Open WebUI, n8n) can evict `gemma4:e4b`, which makes the next reply slow, and Whisper falls back to CPU if VRAM is full at startup.
-- **Unverified on real speech:** the end-to-end loop was verified with injected audio and a real mic pickup, but the wake word and VAD thresholds still need tuning with my actual voice and room.
+- **VRAM contention:** Ollama is configured with `OLLAMA_MAX_LOADED_MODELS=2` (see `/etc/systemd/system/ollama.service.d/override.conf`). When Open WebUI's chat model and the `helper-cpu` model are both loaded, `gemma4:e4b` gets evicted, and AURA's next reply takes 10–20 s while it reloads. Options: raise the limit to 3 (gemma needs about 7 GB), or have Open WebUI use `gemma4:e4b` too. Whisper falls back to CPU if VRAM is full at startup.
+- **Wake word varies by voice:** with synthetic voices the "Aura, wake up" model scores 0.99 for most voices but only 0.13 for some, while non-wake phrases score 0.001. Run `--tune-wakeword` with my real voice; retrain if my peak is low.
 - **Speakers without headphones:** half-duplex only, so AURA ignores the mic while she talks and for 350 ms afterwards.
 - The HUD runs through XWayland (`QT_QPA_PLATFORM=xcb`) because native Wayland ignores window positioning. A proper fix is `layer-shell` via `LayerShellQt`.
 
