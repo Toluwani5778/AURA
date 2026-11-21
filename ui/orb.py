@@ -41,7 +41,7 @@ TOOL_WORDS = {
     "forget": "Forgetting", "power": "Standing by", "lock_screen": "Locking up", "get_datetime": "Checking the clock",
     "list_apps": "Looking through your apps", "look_at_screen": "Looking at your screen",
 }
-HALO_HEIGHT = 230
+from core.config import HUD_HEIGHT as HALO_HEIGHT, HUD_OPACITY, HUD_PILL_OPACITY
 
 
 def _mix(a: QColor, b: QColor, t: float) -> QColor:
@@ -151,13 +151,13 @@ class AuraHUD(QWidget):
                 seed = self.seeds[i % len(self.seeds)]
                 x = w * (0.5 + 0.42 * math.sin(t * speed * (0.6 + 0.15 * i) + seed))
                 breathe = 0.85 + 0.15 * math.sin(t * 1.7 + seed)
-                ry = h * (0.75 + 0.35 * self.level) * breathe
+                ry = h * (0.45 + 0.25 * self.level) * breathe
                 rx = w * (0.22 + 0.06 * math.sin(t * 0.5 + seed))
                 # Draw a circle in a vertically squashed space -> soft ellipse
                 sy = ry / rx
                 cy = (h + ry * 0.05) / sy
                 grad = QRadialGradient(QPointF(x, cy), rx)
-                c0 = QColor(color); c0.setAlphaF(min(1.0, 0.95 * k * (1 if i < n else 0.6)))
+                c0 = QColor(color); c0.setAlphaF(min(1.0, HUD_OPACITY * k * (1 if i < n else 0.6)))
                 c1 = QColor(color); c1.setAlphaF(0.0)
                 grad.setColorAt(0.0, c0)
                 grad.setColorAt(1.0, c1)
@@ -169,7 +169,7 @@ class AuraHUD(QWidget):
                 p.restore()
             p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
             # thin bright line hugging the screen edge
-            edge = QColor(self.colors[0]); edge.setAlphaF(min(1.0, 0.9 * k))
+            edge = QColor(self.colors[0]); edge.setAlphaF(min(1.0, HUD_OPACITY * 1.5 * k))
             p.fillRect(QRectF(0, h - 2, w, 2), edge)
 
         text = self.label
@@ -189,10 +189,10 @@ class AuraHUD(QWidget):
         text = fm.elidedText(text, Qt.TextElideMode.ElideRight, int(w * 0.5))
         tw = fm.horizontalAdvance(text)
         pw, ph = tw + 44, fm.height() + 18
-        rect = QRectF((w - pw) / 2, h - ph - 56, pw, ph)
+        rect = QRectF((w - pw) / 2, max(2, h - ph - 52), pw, ph)
         path = QPainterPath()
         path.addRoundedRect(rect, ph / 2, ph / 2)
-        bg = QColor(12, 14, 28); bg.setAlphaF(min(0.78, k * 1.2))
+        bg = QColor(12, 14, 28); bg.setAlphaF(min(HUD_PILL_OPACITY, k * 1.2))
         p.fillPath(path, bg)
         rim = QColor(self.colors[0]); rim.setAlphaF(min(0.9, k * 1.3))
         p.setPen(rim)

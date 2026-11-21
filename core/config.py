@@ -95,3 +95,11 @@ AUDIO_FRAMES_PER_BUFFER = 1280   # 80 ms; OpenWakeWord's native frame size
 SESSIONS_DIR = DATA_DIR / "sessions"
 MEMORY_FILE = DATA_DIR / "memory.json"
 LOG_FILE = DATA_DIR / "aura.log"
+
+# ---------------------------------------------------------------------------
+# HUD (aurora glow at the bottom of the screen)
+# ---------------------------------------------------------------------------
+HUD_ENABLED = _env("HUD_ENABLED", True)
+HUD_HEIGHT = _env("HUD_HEIGHT", 110)        # px of screen the glow may use (taskbar is ~44)
+HUD_OPACITY = _env("HUD_OPACITY", 0.35)     # 0 = invisible, 1 = full strength
+HUD_PILL_OPACITY = _env("HUD_PILL_OPACITY", 0.55)

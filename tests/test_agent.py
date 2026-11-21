@@ -187,3 +187,19 @@ class ConfirmationSafetyTests(unittest.TestCase):
         self.assertEqual(DesktopApp("x", "X", "env FOO=1 sh -c thing").process_name, "")
         self.assertEqual(DesktopApp("x", "X", "env GDK=1 /usr/bin/gimp %U").process_name, "gimp")
         self.assertEqual(DesktopApp("x", "X", "python3 -m foo").process_name, "")
+
+
+class FarewellTests(unittest.TestCase):
+    def test_goodnight_ends_without_the_model(self):
+        agent = make_agent([])          # any model call would raise IndexError
+        for phrase in ("Good night Aura", "thanks, that's all", "goodbye", "go to sleep"):
+            agent.respond(phrase)
+            self.assertTrue(agent.end_requested, phrase)
+
+    def test_long_sentence_with_bye_is_not_a_farewell(self):
+        agent = make_agent([("Sure.", [])])
+        agent.respond("can you tell me how to say bye in french and spanish and also german please")
+        self.assertFalse(agent.end_requested)
+
+    def test_leaked_tool_name_not_spoken(self):
+        self.assertEqual(speakable("Good night to you too! endconversation"), "Good night to you too!")

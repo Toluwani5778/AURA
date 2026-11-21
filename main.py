@@ -317,7 +317,8 @@ def main():
         run_wakeword_tuner()
     else:
         log.info("Starting AURA%s", f" for {USER_NAME}" if USER_NAME else "")
-        run_voice_mode(greet=not args.no_greet, hud=not args.no_hud)
+        from core.config import HUD_ENABLED
+        run_voice_mode(greet=not args.no_greet, hud=HUD_ENABLED and not args.no_hud)
 
 
 if __name__ == "__main__":

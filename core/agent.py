@@ -48,6 +48,13 @@ Current local time: {now}.
 
 YES = re.compile(r"\b(yes|yeah|yep|yup|sure|do it|go ahead|confirm|affirmative|please do|okay|ok)\b", re.I)
 NO = re.compile(r"\b(no|nope|cancel|don't|do not|stop|never ?mind|wait)\b", re.I)
+# Goodbyes are handled in code: the model sometimes *writes* "end_conversation"
+# instead of calling it, which left AURA awake until the silence timeout.
+FAREWELL = re.compile(
+    r"\b(good ?night|good ?bye|bye( bye)?|go (back )?to sleep|that'?s all|that is all|stop listening|"
+    r"go away|dismissed|see you( later)?|talk (to you )?later|i'?m done|we'?re done|sleep now)\b", re.I)
+FAREWELLS = ["Good night! Just say Aura, wake up when you need me.", "Okay, talk soon!",
+             "Sleep well! I'll be right here."]
 CONFIRM_TIMEOUT = 30          # seconds a pending dangerous action stays valid
 SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
@@ -56,6 +63,7 @@ def speakable(text: str) -> str:
     """Remove formatting the TTS would read literally."""
     text = re.sub(r"```.*?```", " ", text, flags=re.S)
     text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"\b(end_?conversation|[a-z]+_[a-z_]+\(\))\b", "", text, flags=re.I)  # leaked tool names
     text = re.sub(r"[*_#`>|~]", "", text)
     text = re.sub(r"^\s*[-•]\s+", "", text, flags=re.M)
     text = re.sub(r"[\U0001F300-\U0001FAFF☀-➿]", "", text)
@@ -108,6 +116,14 @@ class Agent:
     def respond(self, user_text: str, on_sentence: Callable[[str], None] = lambda s: None) -> str:
         """Handle one user utterance; returns the full spoken reply."""
         self.end_requested = False
+        if FAREWELL.search(user_text) and len(re.findall(r"[a-z']+", user_text.lower())) <= 10:
+            reply = FAREWELLS[len(self.history) % len(FAREWELLS)]
+            self.history += [{"role": "user", "content": user_text},
+                             {"role": "assistant", "content": reply}]
+            self.pending = None
+            self.end_requested = True
+            on_sentence(reply)
+            return reply
         if self.pending:
             handled = self._resolve_pending(user_text, on_sentence)
             if handled is not None:

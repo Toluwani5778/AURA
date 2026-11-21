@@ -4,7 +4,7 @@
 
 AURA starts when I log in, greets me like a secretary would, and then I just talk to her: "open Firefox and turn the volume down", "what's the weather tomorrow?", "what's this error on my screen?", "remember that my sister's name is Ada", "good night, Aura". She's an **agent**, not a script. An LLM decides what to say and which tools to use, so requests don't need special phrasing. Everything runs on this machine: the brain, the ears and the voice.
 
-The name and personality are explained in [docs/naming.md](docs/naming.md). Progress and plans are in [ROADMAP.md](ROADMAP.md).
+**How to use her day to day: [MANUAL.md](MANUAL.md).** The name and personality are explained in [docs/naming.md](docs/naming.md). Progress and plans are in [ROADMAP.md](ROADMAP.md).
 
 ---
 
